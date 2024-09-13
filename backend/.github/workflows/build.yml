@@ -1,0 +1,88 @@
+name: coinbase-build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the latest code from the repository
+      - uses: actions/checkout@v4
+
+      # Step 2: Set up JDK 21 for the build process
+      - name: Setting up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # Step 3: Build the project using Maven
+      - name: Build with Maven
+        run: mvn clean install
+
+      # Step 4: Setup AWS ECR Details
+      - name: Setting up AWS ECR Details
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Step 5: Login to Amazon ECR
+      - name: Login to Amazon ECR
+        id: login-pf-aws-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Step 6: Build and push Docker image
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-pf-aws-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: 'latest'
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:coinbase-$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:coinbase-$IMAGE_TAG
+
+      # Step 7: Set up Kubernetes CLI (kubectl)
+      - name: Set up Kubernetes CLI
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.31.0' #Obtained from https://storage.googleapis.com/kubernetes-release/release/stable.txt Make sure to add a v before the version number.
+
+      # Step 8: Configure kubectl with kubeconfig
+      - name: Configure kubectl
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
+        run: |
+          # Create the .kube directory if it doesn't exist
+          mkdir -p $HOME/.kube
+          
+          # Debugging: Print the entire KUBECONFIG value for verification
+          echo "Full KUBECONFIG value:"
+          echo "$KUBECONFIG"
+
+          # Decode and write the kubeconfig file
+          echo "$KUBECONFIG" | base64 --decode > $HOME/.kube/config
+
+      # Step 9: Apply Kubernetes manifests
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+
+      # Step 10: Install Newman
+      - name: Install Newman
+        run: npm install -g newman
+
+      # Step 11: Run Postman Collection with Newman
+      - name: Run Postman Collection
+        env:
+          POSTMAN_API_KEY: ${{ secrets.POSTMAN_API_KEY }}
+        run: |
+          newman run https://api.postman.com/collections/27406561-af7f744d-2fad-475d-8cd9-27fa633d78db?access_key=$POSTMAN_API_KEY
